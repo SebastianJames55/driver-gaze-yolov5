@@ -102,7 +102,9 @@ def detect(opt):
         # save extracted features
         imagename = (path.split('/')[-1]).split('.')[0]
         tensor = activation['after22'].data.cpu()
-        torch.save(tensor, os.path.join(opt.features, imagename +'.pt'))
+        features_path = os.path.join(opt.features, imagename +'.pt')
+        os.makedirs(os.path.dirname(features_path), exist_ok=True)
+        torch.save(tensor, features_path)
 
 
 
