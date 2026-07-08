@@ -80,6 +80,7 @@ def main():
             seq_len = args.sequence
             for i in range(len(feature_files) - seq_len + 1):
                 window_files = feature_files[i : i + seq_len]
+                target_frame = window_files[-1]
                 
                 print(f"[Processing] Frame {i+1}/{len(feature_files) - seq_len + 1}: {target_frame}...", end="\r")
                 # Stack arrays across sequence axis -> Shape: (Sequence, Channels, H, W)
@@ -126,7 +127,7 @@ def main():
                 generate_visual_overlay(window_files[-1], pred_grid, args)
         else:
             # --- Static Single-Frame Loop ---
-            for f_file in feature_files:
+            for idx, f_file in enumerate(feature_files):
                 print(f"[Processing] Frame {idx+1}/{len(feature_files)}: {f_file}...", end="\r")
                 # Load the file natively with PyTorch, bypassing numpy completely
                 try:
@@ -150,6 +151,7 @@ def main():
                 pred_grid = pred_flat.reshape(args.gridheight, args.gridwidth)
                 
                 generate_visual_overlay(f_file, pred_grid, args)
+                break
 
     print(f"[+] Heatmap compilation completed successfully! Check outputs in: {args.visualizations}")
 

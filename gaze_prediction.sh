@@ -9,5 +9,5 @@ python3 gaze_prediction.py \
         --gridwidth 16 \
         -b 1 \
         --gpu 0 \
-        # --lstm \
+        # --convlstm \
         # --sequence 6
