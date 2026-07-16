@@ -23,7 +23,6 @@
 !cfg/yolov3*.cfg
 
 storage.googleapis.com
-runs/*
 data/*
 !data/hyps/*
 !data/images/zidane.jpg
@@ -249,3 +248,8 @@ com_crashlytics_export_strings.xml
 crashlytics.properties
 crashlytics-build.properties
 fabric.properties
+
+*.txt
+!features/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/000000.pt
+!runs/detect/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/labels/000000.txt
+!runs/detect/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/000000.jpg
