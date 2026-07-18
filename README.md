@@ -1,70 +1,30 @@
-This is the repo of the work [Where and What: Driver Attention-based Object Detection](https://arxiv.org/pdf/2204.12150.pdf).
+(Following is currently only in dev branch of this repo) 
+This repo is to run inference on KITTI-360 dataset. 
 
-## Overview
-The code for saliency metrics is based on: https://github.com/tarunsharma1/saliency_metrics/blob/master/salience_metrics.py   
-The code for the convolutional LSTM is based on: https://github.com/yaorong0921/Driver-Intention-Prediction/blob/master/models/convolution_lstm.py   
-The code for extracting YOLOv5 features is based on:  https://github.com/ultralytics/yolov5 (Release 5.0).  
+Original work - [Where and What: Driver Attention-based Object Detection](https://arxiv.org/pdf/2204.12150.pdf).
 
-### Training and Testing
-Our model can be trained and tested with the following steps:
+### Running Inference
+The pretrained model can be tested with the following steps:
 
-1. Prepare BDD-A images:  
-Download videos from https://bdd-data.berkeley.edu/ and extract images.   
-Camera image names are expected as videoNr_imgNr and corresponding gaze maps as videoNr_pure_hm_imgNr.
+1. Collect data:
+Download Perspective Images for Train & Val (128G) images from [KITTI-360](https://www.cvlibs.net/datasets/kitti-360/user_login.php)
+Sample placed in `datasets\`
 
-2. Extract features and save object bounding boxes:  
-Download weights (yolov5s.pt) and code from https://github.com/ultralytics/yolov5 (Release 5.0) and run extract_features.sh
+2. Extracting features:
+Download weights (yolov5s.pt) from (yolov5 Release v5)[https://github.com/ultralytics/yolov5] and run ``extract_features.sh``
 (extract_features.py is a modified version of detect.py)
+This provides extracted features (`features/`), object bounding boxes (`runs/detect/`), and labels (`runs/detect/labels/`). Samples are provided in these directories.
+Note: `models/` and `utils/` folders are taken from yolov5 release v5. A few functions and changes were taken from yolov5 release v6, v6.1
 
-3. Compute the ground-truth grids and save them in a txt-file:  
-Run compute_grid.sh
+3. Test:  
+For gaze map prediction and pixel-level/object-level evaluation run gaze_prediction.sh.  
+Checkpoint for the trained grid 16x16 model (without LSTM) is available.      
+Heatmap generated in `outputs/` (sample provided)
 
-4. Train and test:  
-For gaze map prediction and pixel-level/object-level evaluation run gaze_prediction_and_evaluation.sh.  
-Training is optional, checkpoints for our trained grid 16x16 models (without LSTM, with LSTM and sequence length 8, with convLSTM and sequence length 6) are available.      
-Features are expected within folders with names training/validation/test.   
-
-
-Possible folder structure to test our pretrained 16x16 model without LSTM:  
-```
-project/  
-├── bdda.py   
-├── network.py   
-├── gaze_prediction_and_evaluation.py   
-├── grid616_model_best.pth.tar  
-├── BDDA/   
-│   └── test/   
-│       └── gazemap_images/  # Ground-truth gaze map images (Created in step 1)  
-│           ├── 1_pure_hm_00000.jpg  
-│           ├── 1_pure_hm_00333.jpg  
-│           ├── 1_pure_hm_00666.jpg  
-│           └── ...  
-├── features/  # Extracted YOLOv5 features (Created in step 2)  
-│   └── test/  
-│       ├── 1_00000.pt  
-│       ├── 1_00333.pt  
-│       ├── 1_00666.pt  
-│       └── ...  
-├── grids/  
-│   └── grid1616/  
-│       └── test_grid.txt   # Grids of test set images (Created in step 2)  
-├── yolo5_boundingboxes/  # Detected YOLOv5 object bounding boxes (Created in step 2)  
-│   ├── 1_00000.txt  
-│   ├── 1_00333.txt  
-│   ├── 1_00666.txt  
-│   └── ...  
-└── results/   
-    └── grid1616/  # Folder to save predicted gaze maps     
-```
-
-
-
-### Misc.
-More files can be found in the 'More files' directory:  
-1. Scripts for computing and evaluating the baseline (average of all BDD-A training gaze maps)  
-2. The script that we used to compute the model complexity.  
-3. A script for evaluating other models based on given predicted gaze maps.  
-4. A script for drawing the ROC curves and computing the optimal thresholds.  
+## References
+[Code for Saliency metrics](https://github.com/tarunsharma1/saliency_metrics/blob/master/salience_metrics.py)
+[Code for Convolutional LSTM](https://github.com/yaorong0921/Driver-Intention-Prediction/blob/master/models/convolution_lstm.py)
+[Code for extracting YOLOv5 features (Release 5.0, 6.0. 6.1)](https://github.com/ultralytics/yolov5)
 
 
 ### Citation
