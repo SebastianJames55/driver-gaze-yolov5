@@ -193,7 +193,7 @@ def detect(opt):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--source', type=str, default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', help='source')  # file/folder, 0 for webcam
     parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
     parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
     parser.add_argument('--iou-thres', type=float, default=0.45, help='IOU threshold for NMS')
@@ -208,13 +208,13 @@ if __name__ == '__main__':
     parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
     parser.add_argument('--augment', action='store_true', help='augmented inference')
     parser.add_argument('--update', action='store_true', help='update all models')
-    parser.add_argument('--project', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/runs/detect', help='save results to project/name')
-    parser.add_argument('--name', default='data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect', help='save results to project/name')
+    parser.add_argument('--project', default='runs/detect', help='save results to project/name')
+    parser.add_argument('--name', default='data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', help='save results to project/name')
     parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
     parser.add_argument('--line-thickness', default=3, type=int, help='bounding box thickness (pixels)')
     parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
     parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
-    parser.add_argument('--features', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/features/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect', metavar='DIR', help='path to folder where to save features')
+    parser.add_argument('--features', default='features/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', metavar='DIR', help='path to folder where to save features')
     opt = parser.parse_args()
     print(opt)
     check_requirements(exclude=('tensorboard', 'pycocotools', 'thop'))

@@ -18,7 +18,7 @@ This provides extracted features (`features/`), object bounding boxes (`runs/det
 Note: `models/` and `utils/` folders are taken from yolov5 release v5. A few functions and changes were taken from yolov5 release v6, v6.1
 
 3. **Test:**  
-For gaze map prediction and pixel-level/object-level evaluation run gaze_prediction.sh.  
+For gaze map prediction and pixel-level/object-level evaluation run ``gaze_prediction.sh`` 
 Checkpoint for the trained grid 16x16 model (without LSTM) is available.      
 Heatmap generated in `outputs/` (sample provided)
 

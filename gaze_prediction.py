@@ -21,9 +21,9 @@ from kitti360 import Kitti360
 
 
 parser = argparse.ArgumentParser(description='Feature Test')
-parser.add_argument('--data', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to dataset')
-parser.add_argument('--features', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/features/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to extracted features')
-parser.add_argument('--best', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/grid1616_model_best.pth.tar', type=str, metavar='PATH', help='path to best checkpoint (default: none)')
+parser.add_argument('--data', default='/home/datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to dataset')
+parser.add_argument('--features', default='features/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to extracted features')
+parser.add_argument('--best', default='grid1616_model_best.pth.tar', type=str, metavar='PATH', help='path to best checkpoint (default: none)')
 parser.add_argument('--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
 parser.add_argument('-b', '--batch-size', default=64, type=int,
@@ -33,14 +33,14 @@ parser.add_argument('-b', '--batch-size', default=64, type=int,
                          'using Data Parallel or Distributed Data Parallel')
 parser.add_argument('-p', '--print-freq', default=10, type=int,
                     metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--gpu', default=None, type=int,
+parser.add_argument('--gpu', default=0, type=int,
                     help='GPU id to use.')
 parser.add_argument('--gridheight', default=16, type=int, metavar='N',
                     help='number of rows in grid')
 parser.add_argument('--gridwidth', default=16, type=int, metavar='N',
                     help='number of columns in grid ')
-parser.add_argument('--yolo5bb', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/runs/detect/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/labels', metavar='DIR', help='path to folder of yolo5 bounding box txt files')
-parser.add_argument('--visualizations', default='C:/Users/SEBASTIAN/OneDrive/Documents/ALU/SS2026/DL lab/project/RL3/driver-gaze-yolov5/outputs/2d_heatmaps/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to folder for visalization of predicted gaze maps and target')
+parser.add_argument('--yolo5bb', default='runs/detect/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/labels', metavar='DIR', help='path to folder of yolo5 bounding box txt files')
+parser.add_argument('--visualizations', default='outputs/2d_heatmaps/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to folder for visalization of predicted gaze maps and target')
 parser.add_argument('--threshhold', default=0.5, type=float, metavar='N', help='threshold for object-level evaluation')
 parser.add_argument('--lstm', default=False, action='store_true', help='use lstm module')
 parser.add_argument('--convlstm', default=False, action='store_true', help='use convlstm module')
