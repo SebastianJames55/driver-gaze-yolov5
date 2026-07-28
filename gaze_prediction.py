@@ -7,6 +7,7 @@ import os
 import argparse
 import time
 import math
+import logging
 
 import torch
 from torch.utils.data import DataLoader
@@ -21,8 +22,8 @@ from kitti360 import Kitti360
 
 
 parser = argparse.ArgumentParser(description='Feature Test')
-parser.add_argument('--data', default='/home/datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to dataset')
-parser.add_argument('--features', default='features/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to extracted features')
+parser.add_argument('--data', default='/home/datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to dataset')
+parser.add_argument('--features', default='features/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to extracted features')
 parser.add_argument('--best', default='grid1616_model_best.pth.tar', type=str, metavar='PATH', help='path to best checkpoint (default: none)')
 parser.add_argument('--workers', default=4, type=int, metavar='N',
                     help='number of data loading workers (default: 4)')
@@ -39,104 +40,154 @@ parser.add_argument('--gridheight', default=16, type=int, metavar='N',
                     help='number of rows in grid')
 parser.add_argument('--gridwidth', default=16, type=int, metavar='N',
                     help='number of columns in grid ')
-parser.add_argument('--yolo5bb', default='runs/detect/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/labels', metavar='DIR', help='path to folder of yolo5 bounding box txt files')
-parser.add_argument('--visualizations', default='outputs/2d_heatmaps/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect/', metavar='DIR', help='path to folder for visalization of predicted gaze maps and target')
+parser.add_argument('--yolo5bb', default='runs/detect/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/labels', metavar='DIR', help='path to folder of yolo5 bounding box txt files')
+parser.add_argument('--visualizations', default='outputs/2d_heatmaps/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/', metavar='DIR', help='path to folder for visalization of predicted gaze maps and target')
 parser.add_argument('--threshhold', default=0.5, type=float, metavar='N', help='threshold for object-level evaluation')
 parser.add_argument('--lstm', default=False, action='store_true', help='use lstm module')
 parser.add_argument('--convlstm', default=False, action='store_true', help='use convlstm module')
 parser.add_argument('--sequence', default=6, type=int, metavar='N', help='sequence length for lstm module')
+parser.add_argument('--skip-existing', default=True, action='store_true',
+                    help='skip visualization if pred file already exists')
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Initialize logger instance for this file
+logger = logging.getLogger(__name__)
+
+
 def main():
+    logger.info("=== STARTING GAZE EVALUATION LOG ===")
+
     args = parser.parse_args()
 
-    if torch.cuda.is_available():
-        # Fallback to args.gpu if specified, otherwise default to device 0
-        gpu_id = args.gpu if 'args' in locals() and hasattr(args, 'gpu') else 0
-        device = torch.device(f"cuda:{gpu_id}")
-    else:
-        device = torch.device("cpu")
+    try:
+        dim = args.gridwidth * args.gridheight
+        th = 1/dim
 
-    dim = args.gridwidth * args.gridheight
-    th = 1/dim
+        if args.gpu is not None:
+            logger.info("Use GPU: {} for testing".format(args.gpu))
 
-    if args.gpu is not None:
-        print("Use GPU: {} for testing".format(args.gpu))
+        model = network.Net(args.gridheight, args.gridwidth)
 
-    model = network.Net(args.gridheight, args.gridwidth)
+        if args.lstm:
+            model = network.LstmNet(args.gridheight, args.gridwidth)
 
-    if args.lstm:
-        model = network.LstmNet(args.gridheight, args.gridwidth)
+        if args.convlstm:
+            model = network.ConvLSTMNet(args.gridheight, args.gridwidth, args.sequence)
 
-    if args.convlstm:
-        model = network.ConvLSTMNet(args.gridheight, args.gridwidth, args.sequence)
+        if args.gpu is not None:
+            torch.cuda.set_device(args.gpu)
+            model.cuda(args.gpu)
+        
+        testdir = args.data
+        test_dataset = Kitti360("test", testdir, args.features,
+                                th, (args.lstm or args.convlstm), args.sequence)
+        test_loader = torch.utils.data.DataLoader(
+            test_dataset,
+            batch_size=args.batch_size, shuffle=False,
+            num_workers=args.workers, pin_memory=True)
 
-    if args.gpu is not None:
-        torch.cuda.set_device(args.gpu)
-        model.cuda(args.gpu)
+        if args.best:
+            if os.path.isfile(args.best):
+                logger.info("=> loading checkpoint '{}'".format(args.best))
+                checkpoint = torch.load(args.best)
+                args.start_epoch = checkpoint['epoch']
+                model.load_state_dict(checkpoint['state_dict'], False)
+                logger.info("=> loaded checkpoint '{}' (epoch {})"
+                    .format(args.best, checkpoint['epoch']))
+            else:
+                logger.warning("=> no checkpoint found at '{}'".format(args.best))
+
+        test(test_loader, model, args)
+    except Exception as e:
+        logger.exception(f"Unhandled exception in main execution: {e}")
+    finally:
+        # Ensure all handlers flush log messages to the text file before exiting
+        for handler in logging.getLogger().handlers:
+            handler.flush()
     
-    testdir = args.data
-    test_dataset = Kitti360("test", testdir, args.features,
-                             th, (args.lstm or args.convlstm), args.sequence)
-    test_loader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=args.batch_size, shuffle=False,
-        num_workers=args.workers, pin_memory=True)
-
-    if args.best:
-        if os.path.isfile(args.best):
-            print("=> loading checkpoint '{}'".format(args.best))
-            checkpoint = torch.load(args.best)
-            args.start_epoch = checkpoint['epoch']
-            model.load_state_dict(checkpoint['state_dict'], False)
-            print("=> loaded checkpoint '{}' (epoch {})"
-                  .format(args.best, checkpoint['epoch']))
-        else:
-            print("=> no checkpoint found at '{}'".format(args.best))
-
-    test(test_loader, model, args)
-
 
 def test(test_loader, model, args):
     batch_time = AverageMeter()
 
+    # Configure logger to output both to console and a log file
+    log_file_path = os.path.join(args.visualizations, "execution_log.txt")
+    os.makedirs(args.visualizations, exist_ok=True)
+
+    # Single, clean logging setup
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        handlers=[
+            logging.FileHandler(log_file_path, mode='a'),
+            logging.StreamHandler()
+        ],
+        force=True  # Overrides any existing logger setups from PyTorch/Torchvision
+    )
+
+    logger = logging.getLogger(__name__)
+
     model.eval()
-
-    all_count = 0
-
-    hm_max_values = []
 
     i = 0
 
-    heightfactor = 376 // args.gridheight
-    widthfactor = 1408 // args.gridwidth
-
     smoothing = GaussianSmoothing(1, 5, 1).to(device)
+
+    total_input_images = 0
+    total_saved_preds = 0
 
     with torch.no_grad():
         end = time.time()
         for i, (input, img_names) in enumerate(test_loader):
+
+            # Track batch input count
+            batch_input_count = len(img_names)
+            total_input_images += batch_input_count
+
+            if args.skip_existing:
+                # Filter out images that already have pred files
+                new_input = []
+                new_img_names = []
+
+                for j, img_name in enumerate(img_names):
+                    pred_path = os.path.join(args.visualizations, f"{img_name}_pred.png")
+                    if os.path.exists(pred_path):
+                        logger.info(f"[SKIP] {img_name} already visualized")
+                    else:
+                        new_input.append(input[j])
+                        new_img_names.append(img_name)
+
+                # If all images in this batch are already done → skip entire batch
+                if len(new_input) == 0:
+                    continue
+
+                # Rebuild batch
+                input = torch.stack(new_input)
+                img_names = new_img_names
+            
             if args.gpu is not None:
                 input = input.cuda(args.gpu, non_blocking=True)
 
             # compute output
             output = model(input)
-
             output = torch.sigmoid(output)
 
-            heatmap = grid2heatmap(output, [heightfactor, widthfactor], [args.gridheight, args.gridwidth])
+            # Reshape 1D grid directly to 2D low-res feature map (e.g., 16x16)
+            heatmap = output.view(-1, 1, args.gridheight, args.gridwidth)
+
+            # Smoothly upsample directly to target KITTI-360 resolution
             heatmap = F.interpolate(heatmap, size=[376, 1408], mode='bilinear', align_corners=False)
+
+            # Smooth borders gracefully without hard constant padding
             heatmap = smoothing(heatmap)
-            heatmap = F.pad(heatmap, (2, 2, 2, 2), mode='constant')
-            heatmap = heatmap.view(heatmap.size(0), -1)
-            heatmap = F.softmax(heatmap, dim=1)
 
-            # normalize
-            heatmap -= heatmap.min(1, keepdim=True)[0]
-            heatmap /= heatmap.max(1, keepdim=True)[0]
+            # Min-Max Normalization safely avoiding division by zero
+            min_v = heatmap.amin(dim=(1, 2, 3), keepdim=True)
+            max_v = heatmap.amax(dim=(1, 2, 3), keepdim=True)
+            heatmap = (heatmap - min_v) / (max_v - min_v + 1e-8)
 
-            heatmap = heatmap.view(-1, 1, 376, 1408)
+            batch_saved_count = 0
 
             for j in range(heatmap.size(0)):
                 img_name = img_names[j]
@@ -149,87 +200,35 @@ def test(test_loader, model, args):
                 if os.path.exists(filename):
                     with open(filename) as f:
 
-                        for linestring in f:
-                            all_count += 1
+                        if heatmap_img is None or heatmap_img.numel() == 0:
+                            logger.warning(f"[WARN] Empty heatmap for {filename}")
 
-                            line = linestring.split()
-
-                            width = float(line[3])
-                            height = float(line[4])
-                            x_center = float(line[1])
-                            y_center = float(line[2])
-
-                            x_min, x_max, y_min, y_max = bb_mapping(x_center, y_center, width, height)
-
-                            # find maximum pixel value within object bounding box
-                            heatmap_obj = heatmap_img[0, y_min : y_max + 1, x_min : x_max + 1]
-                            heatmap_obj_max = torch.max(heatmap_obj)
-
-                            # object is recognized if maximum pixel value is higher than th
-                            hm_obj_recogn = heatmap_obj_max > args.threshhold
-
-                            hm_max_values.append(heatmap_obj_max)
-
+                    try:
                         visualization(heatmap_img.cpu(), args.visualizations, img_name)
+                        batch_saved_count += 1
+                        total_saved_preds += 1
+                    except Exception as e:
+                        logger.error(f"[ERROR] Failed to save {filename}: {e}")
+                else:
+                    logger.warning(f"[WARN] No YOLO bounding box file for {filename}")    
 
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
 
             if i % args.print_freq == 0:
-                print('Test: [{0}/{1}]\t'
-                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-                      .format(
-                       i, len(test_loader), batch_time=batch_time))
+                logger.info(
+                    f"Test: [{i}/{len(test_loader)}]\t"
+                    f"Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t"
+                    f"Batch Inputs: {batch_input_count} | Saved _pred: {batch_saved_count}"
+                )
 
-        print('Test: [{0}/{1}]\t'
-              'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
-              .format(
-               i, len(test_loader), batch_time=batch_time))
-
-
-def bb_mapping(x_center_rel, y_center_rel, width_rel, height_rel, img_width = 1408, img_height = 376):
-    """
-    Compute absolute bounding boxes values for given image size and given relative parameters
-
-    :param x_center_rel: relative x value of bb center
-    :param y_center_rel: relative y value of bb center
-    :param width_rel: relative width
-    :param height_rel: relative height
-    :return: absolute values of bb borders
-    """
-    width_abs = width_rel * img_width
-    height_abs = height_rel * img_height
-    x_center_abs = x_center_rel * img_width
-    y_center_abs = y_center_rel * img_height
-    x_min = int(math.floor(x_center_abs - 0.5 * width_abs))
-    x_max = int(math.floor(x_center_abs + 0.5 * width_abs))
-    y_min = int(math.floor(y_center_abs - 0.5 * height_abs))
-    y_max = int(math.floor(y_center_abs + 0.5 * height_abs))
-    bb = [x if x >= 0 else 0 for x in [x_min, x_max, y_min, y_max]]
-    return bb
-
-
-def grid2heatmap(grid, size, num_grid):
-    """
-    Rearrange and expand gridvector of size (gridheight * gridwidth) to size (376 x 1408) by duplicating values
-
-    :param grid: output vector
-    :param size: (H, W) of one expanded grid cell
-    :param num_grids: (H, W) = grid dimension
-    :return: 2D grid of size (376 x 1408)
-    """
-    new_heatmap = torch.zeros(grid.size(0), size[0] * num_grid[0], size[1] * num_grid[1])
-    for i, item in enumerate(grid):
-        idx = torch.nonzero(item)
-        if idx.nelement() == 0:
-            print('Empty')
-            continue
-        for x in idx:
-            new_heatmap[i, x // num_grid[1] * size[0] : (x // num_grid[1] + 1) * size[0], x % num_grid[1] * size[1] : (x % num_grid[1] + 1) * size[1]] = item[x]
-    output = new_heatmap.unsqueeze(1).to(device)
-
-    return output
+        logger.info("=" * 50)
+        logger.info(f"PROCESSING SUMMARY:")
+        logger.info(f"Total Input Images Processed: {total_input_images}")
+        logger.info(f"Total _pred Files Saved:     {total_saved_preds}")
+        logger.info(f"Failed / Skipped Files:       {total_input_images - total_saved_preds}")
+        logger.info("=" * 50)
 
 
 def visualization(heatmap, path, nr):
@@ -287,8 +286,7 @@ class GaussianSmoothing(nn.Module):
         )
         for size, std, mgrid in zip(kernel_size, sigma, meshgrids):
             mean = (size - 1) / 2
-            kernel *= 1 / (std * math.sqrt(2 * math.pi)) * \
-                      torch.exp(-((mgrid - mean) / (2 * std)) ** 2)
+            kernel *= 1 / (std * math.sqrt(2 * math.pi)) * torch.exp(-0.5 * ((mgrid - mean) / std) ** 2)
 
         # Make sure sum of values in gaussian kernel equals 1.
         kernel = kernel / torch.sum(kernel)
@@ -319,7 +317,11 @@ class GaussianSmoothing(nn.Module):
         Returns:
             filtered (torch.Tensor): Filtered output.
         """
-        return self.conv(input, weight=self.weight, groups=self.groups)
+        # Calculate padding to keep output same size as input
+        pad_h = (self.weight.shape[2] - 1) // 2
+        pad_w = (self.weight.shape[3] - 1) // 2
+        input_padded = F.pad(input, (pad_w, pad_w, pad_h, pad_h), mode='reflect')
+        return self.conv(input_padded, weight=self.weight, groups=self.groups)
 
 
 if __name__ == '__main__':
