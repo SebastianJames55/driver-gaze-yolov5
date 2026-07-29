@@ -2,8 +2,8 @@
 The following code is adapted from the file detect.py of https://github.com/ultralytics/yolov5 (Release 5.0)
 """
 
-import os
 import argparse
+import logging
 import time
 from pathlib import Path
 
@@ -12,216 +12,444 @@ import torch
 import torch.backends.cudnn as cudnn
 
 from models.experimental import attempt_load
-from utils.datasets import LoadStreams, LoadImages
-from utils.general import check_img_size, check_requirements, check_imshow, non_max_suppression, apply_classifier, \
-    scale_coords, xyxy2xywh, strip_optimizer, set_logging, increment_path, save_one_box
+from utils.datasets import LoadImages, LoadStreams
+from utils.general import (
+    apply_classifier,
+    check_img_size,
+    check_imshow,
+    check_requirements,
+    non_max_suppression,
+    save_one_box,
+    scale_coords,
+    set_logging,
+    strip_optimizer,
+    xyxy2xywh,
+)
 from utils.plots import colors, plot_one_box
-from utils.torch_utils import select_device, load_classifier, time_synchronized
+from utils.torch_utils import load_classifier, select_device, time_synchronized
 
-class SaveOutput:
-    def __init__(self):
-        self.outputs = []
-
-    def __call__(self, module, module_in, module_out):
-        self.outputs.append(module_out)
-
-    def clear(self):
-        self.outputs = []
-
-save_output = SaveOutput()
-
-hook_handles = []
-
+logging.basicConfig(
+    filename='detect_errors.log',
+    level=logging.ERROR,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+)
+logger = logging.getLogger(__name__)
 
 activation = {}
+
 
 def get_activation(name):
     def hook(model, input, output):
         activation[name] = output.detach()
+
     return hook
 
+
 def detect(opt):
-    source, weights, view_img, save_txt, imgsz = opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size
-    save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
-    webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
-        ('rtsp://', 'rtmp://', 'http://', 'https://'))
+    source, weights, view_img, save_txt, imgsz = (
+        opt.source,
+        opt.weights,
+        opt.view_img,
+        opt.save_txt,
+        opt.img_size,
+    )
+    save_img = not opt.nosave and not source.endswith('.txt')
+    webcam = (
+        source.isnumeric()
+        or source.endswith('.txt')
+        or source.lower().startswith(('rtsp://', 'rtmp://', 'http://', 'https://'))
+    )
     features_dir = Path(opt.features)
     features_dir.mkdir(parents=True, exist_ok=True)
 
-    # Directories
-    save_dir = increment_path(Path(opt.project) / opt.name, exist_ok=opt.exist_ok)  # increment run
-    save_dir = Path(save_dir)
-    (Path(opt.project) / opt.name / 'labels' if save_txt else save_dir).mkdir(parents=True, exist_ok=True)  # make dir
+    save_dir = Path(opt.project) / opt.name
+    save_dir.mkdir(parents=True, exist_ok=True)
+    labels_dir = save_dir / 'labels'
+    labels_dir.mkdir(parents=True, exist_ok=True)
 
-    # Initialize
     set_logging()
     device = select_device(opt.device)
-    half = device.type != 'cpu'  # half precision only supported on CUDA
+    half = device.type != 'cpu'
 
-    # Load model
-    model = attempt_load(weights, map_location=device)  # load FP32 model
-    stride = int(model.stride.max())  # model stride
-    imgsz = check_img_size(imgsz, s=stride)  # check img_size
-    names = model.module.names if hasattr(model, 'module') else model.names  # get class names
+    model = attempt_load(weights, map_location=device)
+    stride = int(model.stride.max())
+    imgsz = check_img_size(imgsz, s=stride)
+    names = model.module.names if hasattr(model, 'module') else model.names
     if half:
-        model.half()  # to FP16
+        model.half()
 
-    # Second-stage classifier
     classify = False
     if classify:
-        modelc = load_classifier(name='resnet101', n=2)  # initialize
-        modelc.load_state_dict(torch.load('weights/resnet101.pt', map_location=device)['model']).to(device).eval()
+        modelc = load_classifier(name='resnet101', n=2)
+        modelc.load_state_dict(
+            torch.load('weights/resnet101.pt', map_location=device)['model']
+        ).to(device).eval()
 
-    # Set Dataloader
-    vid_path, vid_writer = None, None
     if webcam:
         view_img = check_imshow()
-        cudnn.benchmark = True  # set True to speed up constant image size inference
+        cudnn.benchmark = True
         dataset = LoadStreams(source, img_size=imgsz, stride=stride)
     else:
         dataset = LoadImages(source, img_size=imgsz, stride=stride)
 
-    # Run inference
     if device.type != 'cpu':
-        model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        model(
+            torch.zeros(1, 3, imgsz, imgsz)
+            .to(device)
+            .type_as(next(model.parameters()))
+        )
+
+    # Register hook ONCE outside the main dataset loop to avoid memory leaks
+    hook_handle = model.model[22].register_forward_hook(get_activation('after22'))
+
+    # Counters
+    total_input_files = 0
+    saved_pt = 0
+    saved_jpg = 0
+    saved_txt_count = 0
+    saved_no_det = 0
+
+    skipped_pt = 0
+    skipped_jpg = 0
+    skipped_txt = 0
+    skipped_all = 0
+
+    vid_path, vid_writer = None, None
     t0 = time.time()
+
     for path, img, im0s, vid_cap in dataset:
-        count = 0
+        total_input_files += 1
+        activation.clear()  # Clear stale feature maps from previous iteration
+
+        imagename = Path(path[0] if webcam else path).stem
+        pt_file = features_dir / f'{imagename}.pt'
+        jpg_file = save_dir / f'{imagename}.jpg'
+        txt_file = labels_dir / f'{imagename}.txt'
+
+        if opt.skip_existing:
+            # Check if outputs already exist (pt and jpg must exist; txt is optional if 0 detections)
+            if pt_file.exists() and (opt.nosave or jpg_file.exists()):
+                skipped_all += 1
+                skipped_pt += 1
+                if jpg_file.exists():
+                    skipped_jpg += 1
+                if txt_file.exists():
+                    skipped_txt += 1
+                print(f'Skipping {imagename} (already processed)')
+                continue
+
         img = torch.from_numpy(img).to(device)
-        img = img.half() if half else img.float()  # uint8 to fp16/32
-        img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        img = img.half() if half else img.float()
+        img /= 255.0
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
 
-        # Inference
         t1 = time_synchronized()
-
-        # prepare feature extraction
-        model.model[22].register_forward_hook(get_activation('after22')) # 22 is before last BottleneckCSP
 
         pred = model(img, augment=opt.augment)[0]
 
-        # save extracted features
-        imagename = Path(path[0] if webcam else path).stem
-        tensor = activation['after22'].data.cpu()
-        torch.save(tensor, features_dir / f'{imagename}.pt')
+        if 'after22' in activation:
+            tensor = activation['after22'].data.cpu()
+            try:
+                torch.save(tensor, pt_file)
+                saved_pt += 1
+            except Exception as e:
+                logger.error(f'Failed saving PT for {imagename}: {e}')
+        else:
+            logger.error(f'Feature hook failed for {imagename}')
 
+        if not pt_file.exists():
+            logger.error(f'PT not saved for {imagename}')
 
-
-
-        # Apply NMS
-        pred = non_max_suppression(pred, opt.conf_thres, opt.iou_thres, opt.classes, opt.agnostic_nms,
-                                   max_det=opt.max_det)
+        pred = non_max_suppression(
+            pred,
+            opt.conf_thres,
+            opt.iou_thres,
+            opt.classes,
+            opt.agnostic_nms,
+            max_det=opt.max_det,
+        )
         t2 = time_synchronized()
 
-        # Apply Classifier
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
 
-        # Process detections
-        for i, det in enumerate(pred):  # detections per image
-            if webcam:  # batch_size >= 1
-                p, s, im0, frame = path[i], f'{i}: ', im0s[i].copy(), dataset.count
+        for i, det in enumerate(pred):
+            if webcam:
+                p, s, im0, frame = (
+                    path[i],
+                    f'{i}: ',
+                    im0s[i].copy(),
+                    dataset.count,
+                )
             else:
-                p, s, im0, frame = path, '', im0s.copy(), getattr(dataset, 'frame', 0)
+                p, s, im0, frame = (
+                    path,
+                    '',
+                    im0s.copy(),
+                    getattr(dataset, 'frame', 0),
+                )
 
-            p = Path(p)  # to Path
-            save_path = str(save_dir / p.name)  # img.jpg
-            txt_path = str(save_dir / 'labels' / p.stem) + ('' if dataset.mode == 'image' else f'_{frame}')  # img.txt
-            s += '%gx%g ' % img.shape[2:]  # print string
-            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
-            imc = im0.copy() if opt.save_crop else im0  # for opt.save_crop
+            p = Path(p)
+            save_path = str(save_dir / f'{imagename}.jpg')
+            if dataset.mode == 'image':
+                txt_path = labels_dir / imagename
+            else:
+                txt_path = labels_dir / f"{imagename}_{frame}"
+            s += '%gx%g ' % img.shape[2:]
+            gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]
+            imc = im0.copy() if opt.save_crop else im0
+
             if len(det):
-                # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                det[:, :4] = scale_coords(
+                    img.shape[2:], det[:, :4], im0.shape
+                ).round()
 
-                # Print results
                 for c in det[:, -1].unique():
-                    n = (det[:, -1] == c).sum()  # detections per class
-                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "  # add to string
-                    print('s', s)
+                    n = (det[:, -1] == c).sum()
+                    s += f"{n} {names[int(c)]}{'s' * (n > 1)}, "
 
-                # Write results
+                txt_file_written = False
                 for *xyxy, conf, cls in reversed(det):
-                    if save_txt:  # Write to file
-                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
-                        line = (cls, *xywh, conf) if opt.save_conf else (cls, *xywh)  # label format
-                        with open(txt_path + '.txt', 'a') as f:
-                            f.write(('%g ' * len(line)).rstrip() % line + '\n')
+                    if save_txt:
+                        xywh = (
+                            (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn)
+                            .view(-1)
+                            .tolist()
+                        )
+                        line = (
+                            (cls, *xywh, conf)
+                            if opt.save_conf
+                            else (cls, *xywh)
+                        )
+                        try:
+                            with open(f"{txt_path}.txt", 'a') as f:
+                                f.write(
+                                    ('%g ' * len(line)).rstrip() % line + '\n'
+                                )
+                            txt_file_written = True
+                        except Exception as e:
+                            logger.error(
+                                f'Failed saving TXT for {p.name}: {e}'
+                            )
 
-                    if save_img or opt.save_crop or view_img:  # Add bbox to image
-                        c = int(cls)  # integer class
-                        label = None if opt.hide_labels else (names[c] if opt.hide_conf else f'{names[c]} {conf:.2f}')
-                        plot_one_box(xyxy, im0, label=label, color=colors(c, True), line_thickness=opt.line_thickness)
+                    if save_img or opt.save_crop or view_img:
+                        c = int(cls)
+                        label = (
+                            None
+                            if opt.hide_labels
+                            else (
+                                names[c]
+                                if opt.hide_conf
+                                else f'{names[c]} {conf:.2f}'
+                            )
+                        )
+                        plot_one_box(
+                            xyxy,
+                            im0,
+                            label=label,
+                            color=colors(c, True),
+                            line_thickness=opt.line_thickness,
+                        )
                         if opt.save_crop:
-                            save_one_box(xyxy, imc, file=save_dir / 'crops' / names[c] / f'{p.stem}.jpg', BGR=True)
+                            save_one_box(
+                                xyxy,
+                                imc,
+                                file=save_dir
+                                / 'crops'
+                                / names[c]
+                                / f'{p.stem}.jpg',
+                                BGR=True,
+                            )
 
-            # Print time (inference + NMS)
+                if txt_file_written:
+                    saved_txt_count += 1
+            else:
+                saved_no_det += 1
+                logger.error(f'No detections for {p.name} at {p}')
+
             print(f'{s}Done. ({t2 - t1:.3f}s)')
 
-            # Stream results
-            if view_img:
-                cv2.imshow(str(p), im0)
-                cv2.waitKey(1)  # 1 millisecond
-
-            # Save results (image with detections)
             if save_img:
-                if dataset.mode == 'image':
-                    cv2.imwrite(save_path, im0)
-                else:  # 'video' or 'stream'
-                    if vid_path != save_path:  # new video
-                        vid_path = save_path
-                        if isinstance(vid_writer, cv2.VideoWriter):
-                            vid_writer.release()  # release previous video writer
-                        if vid_cap:  # video
-                            fps = vid_cap.get(cv2.CAP_PROP_FPS)
-                            w = int(vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                            h = int(vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                        else:  # stream
-                            fps, w, h = 30, im0.shape[1], im0.shape[0]
-                            save_path += '.mp4'
-                        vid_writer = cv2.VideoWriter(save_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
-                    vid_writer.write(im0)
+                try:
+                    if dataset.mode == 'image':
+                        cv2.imwrite(save_path, im0)
+                        saved_jpg += 1
+                    else:
+                        if vid_path != save_path:
+                            vid_path = save_path
+                            if isinstance(vid_writer, cv2.VideoWriter):
+                                vid_writer.release()
+                            if vid_cap:
+                                fps = vid_cap.get(cv2.CAP_PROP_FPS)
+                                w = int(
+                                    vid_cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+                                )
+                                h = int(
+                                    vid_cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
+                                )
+                            else:
+                                fps, w, h = 30, im0.shape[1], im0.shape[0]
+                                save_path += '.mp4'
+                            vid_writer = cv2.VideoWriter(
+                                save_path,
+                                cv2.VideoWriter_fourcc(*'mp4v'),
+                                fps,
+                                (w, h),
+                            )
+                        vid_writer.write(im0)
+                        saved_jpg += 1
+                except Exception as e:
+                    logger.error(f'Failed saving JPG for {p.name}: {e}')
+
+            if save_img and dataset.mode == 'image':
+                if not Path(save_path).exists():
+                    logger.error(f'JPG not saved for {p.name}')
+
+            if save_txt and len(det):
+                if not Path(f"{txt_path}.txt").exists():
+                    logger.error(f'TXT not saved for {p.name}')
+
+    # Remove hook clean-up
+    hook_handle.remove()
+
+    print('\nSUMMARY')
+    print(f'Total input files: {total_input_files}')
+    print(f'Saved PT: {saved_pt}')
+    print(f'Saved JPG: {saved_jpg}')
+    print(f'Saved TXT files: {saved_txt_count}')
+    print(f'Files with NO detections: {saved_no_det}')
+    print(f'Skipped (already processed): {skipped_all}')
+    print(f'Skipped PT: {skipped_pt}')
+    print(f'Skipped JPG: {skipped_jpg}')
+    print(f'Skipped TXT: {skipped_txt}')
 
     if save_txt or save_img:
-        s = f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}" if save_txt else ''
-        print(f"Results saved to {save_dir}{s}")
+        s = (
+            f"\n{len(list(save_dir.glob('labels/*.txt')))} labels saved to {save_dir / 'labels'}"
+            if save_txt
+            else ''
+        )
+        print(f'Results saved to {save_dir}{s}')
 
     print(f'Done. ({time.time() - t0:.3f}s)')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--weights', nargs='+', type=str, default='yolov5s.pt', help='model.pt path(s)')
-    parser.add_argument('--source', type=str, default='datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', help='source')  # file/folder, 0 for webcam
-    parser.add_argument('--img-size', type=int, default=640, help='inference size (pixels)')
-    parser.add_argument('--conf-thres', type=float, default=0.25, help='object confidence threshold')
-    parser.add_argument('--iou-thres', type=float, default=0.45, help='IOU threshold for NMS')
-    parser.add_argument('--max-det', type=int, default=1000, help='maximum number of detections per image')
-    parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
+    parser.add_argument(
+        '--weights',
+        nargs='+',
+        type=str,
+        default='yolov5s.pt',
+        help='model.pt path(s)',
+    )
+    parser.add_argument(
+        '--source',
+        type=str,
+        default='datasets/KITTI-360-low/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect',
+        help='source',
+    )
+    parser.add_argument(
+        '--img-size', type=int, default=640, help='inference size (pixels)'
+    )
+    parser.add_argument(
+        '--conf-thres',
+        type=float,
+        default=0.25,
+        help='object confidence threshold',
+    )
+    parser.add_argument(
+        '--iou-thres', type=float, default=0.45, help='IOU threshold for NMS'
+    )
+    parser.add_argument(
+        '--max-det',
+        type=int,
+        default=1000,
+        help='maximum number of detections per image',
+    )
+    parser.add_argument('--device', default='', help='cuda device')
     parser.add_argument('--view-img', action='store_true', help='display results')
-    parser.add_argument('--save-txt', default=True, action='store_true', help='save results to *.txt')
-    parser.add_argument('--save-conf', action='store_true', help='save confidences in --save-txt labels')
-    parser.add_argument('--save-crop', action='store_true', help='save cropped prediction boxes')
-    parser.add_argument('--nosave', action='store_true', help='do not save images/videos')
-    parser.add_argument('--classes', nargs='+', type=int, help='filter by class: --class 0, or --class 0 2 3')
-    parser.add_argument('--agnostic-nms', action='store_true', help='class-agnostic NMS')
-    parser.add_argument('--augment', action='store_true', help='augmented inference')
-    parser.add_argument('--update', action='store_true', help='update all models')
-    parser.add_argument('--project', default='runs/detect', help='save results to project/name')
-    parser.add_argument('--name', default='data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', help='save results to project/name')
-    parser.add_argument('--exist-ok', action='store_true', help='existing project/name ok, do not increment')
-    parser.add_argument('--line-thickness', default=3, type=int, help='bounding box thickness (pixels)')
-    parser.add_argument('--hide-labels', default=False, action='store_true', help='hide labels')
-    parser.add_argument('--hide-conf', default=False, action='store_true', help='hide confidences')
-    parser.add_argument('--features', default='features/data_2d_raw/2013_05_28_drive_0009_sync/image_00/data_rect', metavar='DIR', help='path to folder where to save features')
+    parser.add_argument(
+        '--save-txt', 
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help='save results to *.txt (use --no-save-txt to disable)',
+    )
+    parser.add_argument(
+        '--save-conf',
+        action='store_true',
+        help='save confidences in --save-txt labels',
+    )
+    parser.add_argument(
+        '--save-crop',
+        action='store_true',
+        help='save cropped prediction boxes',
+    )
+    parser.add_argument(
+        '--nosave', default=True, action='store_true', help='do not save images/videos'
+    )
+    parser.add_argument('--classes', nargs='+', type=int, help='filter by class')
+    parser.add_argument(
+        '--agnostic-nms', action='store_true', help='class-agnostic NMS'
+    )
+    parser.add_argument(
+        '--augment', action='store_true', help='augmented inference'
+    )
+    parser.add_argument(
+        '--update', action='store_true', help='update all models'
+    )
+    parser.add_argument(
+        '--project', default='runs/detect', help='save results to project/name'
+    )
+    parser.add_argument(
+        '--name',
+        default='data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect',
+        help='save results to project/name',
+    )
+    parser.add_argument(
+        '--exist-ok', action='store_true', help='existing project/name ok'
+    )
+    parser.add_argument(
+        '--line-thickness', default=3, type=int, help='bounding box thickness'
+    )
+    parser.add_argument(
+        '--hide-labels',
+        default=False,
+        action='store_true',
+        help='hide labels',
+    )
+    parser.add_argument(
+        '--hide-conf',
+        default=False,
+        action='store_true',
+        help='hide confidences',
+    )
+    parser.add_argument(
+        '--features',
+        default='features/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect',
+        metavar='DIR',
+        help='path to folder where to save features',
+    )
+    parser.add_argument(
+        '--skip-existing',
+        default=True,
+        action='store_true',
+        help='skip files already saved',
+    )
+
     opt = parser.parse_args()
     print(opt)
     check_requirements(exclude=('tensorboard', 'pycocotools', 'thop'))
 
     with torch.no_grad():
-        if opt.update:  # update all models (to fix SourceChangeWarning)
-            for opt.weights in ['yolov5s.pt', 'yolov5m.pt', 'yolov5l.pt', 'yolov5x.pt']:
+        if opt.update:
+            for opt.weights in [
+                'yolov5s.pt',
+                'yolov5m.pt',
+                'yolov5l.pt',
+                'yolov5x.pt',
+            ]:
                 detect(opt=opt)
                 strip_optimizer(opt.weights)
         else:
